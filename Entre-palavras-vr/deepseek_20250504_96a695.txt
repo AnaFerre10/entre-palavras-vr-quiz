@@ -1,0 +1,11 @@
+entre-palavras-vr/
+├── index.html
+├── js/
+│   ├── main.js
+│   ├── game.js
+│   ├── sceneManager.js
+│   ├── quizManager.js
+│   ├── gazeController.js
+│   ├── uiManager.js
+│   └── constants.js
+└── assets/ (opcional, para texturas/fontes locais)

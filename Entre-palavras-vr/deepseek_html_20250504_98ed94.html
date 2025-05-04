@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>Entre Palavras VR Quiz</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        #renderDiv { width: 100vw; height: 100vh; }
+    </style>
+</head>
+<body>
+    <div id="renderDiv"></div>
+    
+    <!-- Three.js e dependências via CDN -->
+    <script src="https://unpkg.com/three@0.171.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.171.0/examples/js/loaders/FontLoader.js"></script>
+    <script src="https://unpkg.com/three@0.171.0/examples/js/geometries/TextGeometry.js"></script>
+    <script src="https://unpkg.com/three@0.171.0/examples/jsm/webxr/VRButton.js"></script>
+    
+    <!-- Módulos do jogo -->
+    <script type="module" src="./js/main.js"></script>
+</body>
+</html>
