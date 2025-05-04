@@ -1,0 +1,745 @@
+
+<rosieArtifact title="Entre Palavras VR Quiz">
+<rosieCreate file="main.js">
+<![CDATA[
+import { Game } from 'game';
+
+// Get the render target
+const renderDiv = document.getElementById('renderDiv');
+
+// Initialize the game with the render target
+const game = new Game(renderDiv);
+
+// Start the game
+game.start();
+]]>
+</rosieCreate>
+<rosieCreate file="game.js">
+<![CDATA[
+import * as THREE from 'three';
+import { SceneManager } from 'sceneManager';
+import { QuizManager } from 'quizManager';
+import { GazeController } from 'gazeController';
+import { UIManager } from 'uiManager';
+import { Constants } from 'constants';
+
+export class Game {
+    constructor(renderDiv) {
+        this.renderDiv = renderDiv;
+        this.scene = new THREE.Scene();
+        this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.clock = new THREE.Clock();
+        this.score = 0;
+
+        this.setupRenderer();
+        this.setupCamera();
+
+        this.quizManager = new QuizManager();
+        this.uiManager = new UIManager(this.scene, this.camera);
+        this.sceneManager = new SceneManager(this.scene, this.uiManager);
+        this.gazeController = new GazeController(this.camera, this.scene, this.uiManager, this.handleGazeAction.bind(this));
+
+        this.setupInitialScene();
+
+        window.addEventListener('resize', this.onWindowResize.bind(this), false);
+    }
+
+    setupRenderer() {
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.setPixelRatio(window.devicePixelRatio);
+        this.renderer.shadowMap.enabled = true;
+        this.renderDiv.appendChild(this.renderer.domElement);
+    }
+
+    setupCamera() {
+        this.camera.position.set(0, 1.6, 0); // Eye-level height
+        this.camera.add(this.uiManager.gazeIndicator); // Attach indicator to camera
+         this.camera.add(this.uiManager.scoreText); // Attach score to camera
+    }
+
+    setupInitialScene() {
+        this.sceneManager.loadScene(Constants.SCENES.BEACH);
+        this.loadNextQuestion();
+    }
+
+     loadNextQuestion() {
+        const questionData = this.quizManager.getNextQuestion();
+        if (questionData) {
+            const targets = this.uiManager.displayQuestion(questionData);
+            const moveTargets = this.sceneManager.getCurrentMoveTargets();
+            this.gazeController.setTargets([...targets, ...moveTargets]);
+        } else {
+            // Handle game end or loop questions
+            this.uiManager.displayEndMessage("Fim das perguntas!");
+             this.gazeController.setTargets(this.sceneManager.getCurrentMoveTargets()); // Only allow movement
+        }
+    }
+
+
+    handleGazeAction(target) {
+        if (target.userData.type === Constants.TARGET_TYPE.ANSWER) {
+            const isCorrect = this.quizManager.checkAnswer(target.userData.answerIndex);
+            if (isCorrect) {
+                this.score++;
+                this.uiManager.updateScore(this.score);
+                 this.uiManager.showFeedback("Correto!", 0x00ff00);
+                 // Change scene after a short delay
+                 setTimeout(() => {
+                    const nextScene = this.sceneManager.currentSceneIndex === 0 ? Constants.SCENES.FOREST : Constants.SCENES.BEACH;
+                    this.sceneManager.loadScene(nextScene);
+                    this.loadNextQuestion();
+                 }, 1500);
+
+            } else {
+                 this.uiManager.showFeedback("Incorreto!", 0xff0000);
+                 // Maybe shuffle options or just wait for another attempt? For now, just feedback.
+                  setTimeout(() => {
+                    this.uiManager.hideFeedback();
+                    // Re-enable gaze after feedback
+                    this.gazeController.reset();
+                 }, 1500);
+            }
+        } else if (target.userData.type === Constants.TARGET_TYPE.MOVE) {
+             this.uiManager.showFeedback("Movendo...", 0xaaaaaa); // Optional move feedback
+             // Simple teleport move for now
+             this.camera.position.copy(target.position);
+             this.camera.position.y = 1.6; // Reset height after move
+              setTimeout(() => {
+                    this.uiManager.hideFeedback();
+                    this.gazeController.reset();
+                 }, 500); // Short delay after move
+        }
+    }
+
+    onWindowResize() {
+        this.camera.aspect = window.innerWidth / window.innerHeight;
+        this.camera.updateProjectionMatrix();
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    start() {
+        this.animate();
+    }
+
+    animate() {
+        requestAnimationFrame(this.animate.bind(this));
+        const deltaTime = this.clock.getDelta();
+
+        this.gazeController.update(deltaTime);
+        this.uiManager.update(deltaTime); // Update UI elements if needed (e.g., feedback fade)
+
+        this.renderer.render(this.scene, this.camera);
+    }
+}
+]]>
+</rosieCreate>
+<rosieCreate file="sceneManager.js">
+<![CDATA[
+import * as THREE from 'three';
+import { Constants } from 'constants';
+
+export class SceneManager {
+    constructor(scene, uiManager) {
+        this.scene = scene;
+        this.uiManager = uiManager; // Needed to clear old UI elements
+        this.currentSceneObjects = [];
+        this.currentMoveTargets = [];
+        this.currentSceneIndex = -1;
+    }
+
+    clearScene() {
+        this.currentSceneObjects.forEach(obj => {
+            this.scene.remove(obj);
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) {
+                 // Dispose textures if any (important for memory)
+                if (obj.material.map) obj.material.map.dispose();
+                obj.material.dispose();
+            }
+        });
+        this.currentSceneObjects = [];
+        this.currentMoveTargets = [];
+        this.uiManager.clearQuestionUI(); // Clear previous question elements
+         this.scene.background = null;
+         this.scene.environment = null; // Clear environment maps if used
+          // Remove existing lights
+        const lightsToRemove = this.scene.children.filter(child => child.isLight);
+        lightsToRemove.forEach(light => this.scene.remove(light));
+    }
+
+    loadScene(sceneType) {
+        this.clearScene();
+
+        switch (sceneType) {
+            case Constants.SCENES.BEACH:
+                this.createBeachScene();
+                this.currentSceneIndex = 0;
+                break;
+            case Constants.SCENES.FOREST:
+                this.createForestScene();
+                 this.currentSceneIndex = 1;
+                break;
+            // Add cases for other scenes like KING_ROOM later
+        }
+         this.uiManager.updateScoreDisplayPosition(); // Adjust score display based on scene potentially
+    }
+
+    createBeachScene() {
+        // Background
+        this.scene.background = new THREE.Color(0x87CEEB); // Sky blue
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        this.scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        directionalLight.position.set(5, 10, 7);
+        directionalLight.castShadow = true;
+        this.scene.add(directionalLight);
+        this.currentSceneObjects.push(ambientLight, directionalLight);
+
+        // Ground (Sand)
+        const sandGeometry = new THREE.PlaneGeometry(100, 100);
+        const sandMaterial = new THREE.MeshStandardMaterial({ color: 0xF4A460, roughness: 1, metalness: 0 });
+        const sandPlane = new THREE.Mesh(sandGeometry, sandMaterial);
+        sandPlane.rotation.x = -Math.PI / 2;
+        sandPlane.receiveShadow = true;
+        this.scene.add(sandPlane);
+        this.currentSceneObjects.push(sandPlane);
+
+        // Water
+        const waterGeometry = new THREE.PlaneGeometry(100, 50);
+        const waterMaterial = new THREE.MeshStandardMaterial({ color: 0x0077cc, roughness: 0.2, metalness: 0.1, transparent: true, opacity: 0.8 });
+        const waterPlane = new THREE.Mesh(waterGeometry, waterMaterial);
+        waterPlane.rotation.x = -Math.PI / 2;
+        waterPlane.position.z = -25; // Place water further away
+        waterPlane.position.y = 0.05; // Slightly above sand
+        this.scene.add(waterPlane);
+        this.currentSceneObjects.push(waterPlane);
+
+         // Simple Palm Tree
+        const trunkHeight = 3;
+        const trunkGeo = new THREE.CylinderGeometry(0.1, 0.15, trunkHeight, 8);
+        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 }); // Brown
+        const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+        trunk.position.set(3, trunkHeight / 2, -5);
+        trunk.castShadow = true;
+        this.scene.add(trunk);
+        this.currentSceneObjects.push(trunk);
+
+        for (let i = 0; i < 5; i++) {
+            const leafGeo = new THREE.ConeGeometry(1, 1.5, 8);
+            const leafMat = new THREE.MeshStandardMaterial({ color: 0x228B22 }); // Forest green
+            const leaf = new THREE.Mesh(leafGeo, leafMat);
+            leaf.position.y = trunkHeight;
+            leaf.rotation.z = Math.PI / 2; // Point sideways
+            leaf.rotation.x = THREE.MathUtils.randFloatSpread(Math.PI / 2) + Math.PI / 4; // Angle down slightly
+            leaf.position.x = Math.sin(i * Math.PI * 2 / 5) * 0.3;
+            leaf.position.z = Math.cos(i * Math.PI * 2 / 5) * 0.3;
+            trunk.add(leaf); // Add leaves to trunk
+        }
+
+
+        // Move Target Hotspots
+        this.createMoveTarget(new THREE.Vector3(5, 0.1, -5)); // Near palm tree
+        this.createMoveTarget(new THREE.Vector3(-4, 0.1, -8)); // Further on sand
+         this.createMoveTarget(new THREE.Vector3(0, 0.1, -15)); // Closer to water edge
+    }
+
+    createForestScene() {
+        // Background
+        this.scene.background = new THREE.Color(0xADD8E6); // Lighter sky blue for forest
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        this.scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(-5, 10, 5);
+        directionalLight.castShadow = true;
+        // Configure shadow map for potentially more trees
+        directionalLight.shadow.mapSize.width = 1024;
+        directionalLight.shadow.mapSize.height = 1024;
+        this.scene.add(directionalLight);
+        this.currentSceneObjects.push(ambientLight, directionalLight);
+
+        // Ground (Grass)
+        const grassGeometry = new THREE.PlaneGeometry(100, 100);
+        const grassMaterial = new THREE.MeshStandardMaterial({ color: 0x556B2F, roughness: 0.8, metalness: 0 }); // Dark Olive Green
+        const grassPlane = new THREE.Mesh(grassGeometry, grassMaterial);
+        grassPlane.rotation.x = -Math.PI / 2;
+        grassPlane.receiveShadow = true;
+        this.scene.add(grassPlane);
+        this.currentSceneObjects.push(grassPlane);
+
+        // Trees (Simple Cones/Cylinders)
+        const treePositions = [
+            new THREE.Vector3(-8, 0, -10), new THREE.Vector3(7, 0, -12),
+            new THREE.Vector3(-5, 0, -20), new THREE.Vector3(10, 0, -18),
+            new THREE.Vector3(0, 0, -15), new THREE.Vector3(15, 0, -25),
+             new THREE.Vector3(-15, 0, -22)
+        ];
+
+        treePositions.forEach(pos => {
+            const trunkHeight = THREE.MathUtils.randFloat(3, 5);
+            const trunkGeo = new THREE.CylinderGeometry(0.2, 0.3, trunkHeight, 8);
+            const trunkMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 }); // Brown
+            const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+            trunk.position.copy(pos);
+            trunk.position.y = trunkHeight / 2;
+            trunk.castShadow = true;
+            this.scene.add(trunk);
+            this.currentSceneObjects.push(trunk);
+
+            const leavesHeight = THREE.MathUtils.randFloat(2, 4);
+            const leavesRadius = THREE.MathUtils.randFloat(1, 1.8);
+            const leavesGeo = new THREE.ConeGeometry(leavesRadius, leavesHeight, 12);
+            const leavesMat = new THREE.MeshStandardMaterial({ color: 0x228B22 }); // Forest Green
+            const leaves = new THREE.Mesh(leavesGeo, leavesMat);
+            leaves.position.y = trunkHeight + leavesHeight / 2 - 0.2; // Sit on top of trunk
+             leaves.castShadow = true;
+            trunk.add(leaves); // Add leaves as child of trunk
+        });
+
+        // Move Target Hotspots
+        this.createMoveTarget(new THREE.Vector3(-6, 0.1, -15)); // Mid-forest left
+        this.createMoveTarget(new THREE.Vector3(8, 0.1, -16));  // Mid-forest right
+        this.createMoveTarget(new THREE.Vector3(0, 0.1, -22)); // Deeper forest
+    }
+
+     createMoveTarget(position) {
+        const moveGeo = new THREE.CircleGeometry(0.5, 32);
+        // Use a simple visible material for debugging/clarity
+        const moveMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
+        const moveTarget = new THREE.Mesh(moveGeo, moveMat);
+        moveTarget.position.copy(position);
+        moveTarget.rotation.x = -Math.PI / 2;
+        moveTarget.userData = { type: Constants.TARGET_TYPE.MOVE };
+        this.scene.add(moveTarget);
+        this.currentSceneObjects.push(moveTarget);
+        this.currentMoveTargets.push(moveTarget);
+    }
+
+    getCurrentMoveTargets() {
+        return this.currentMoveTargets;
+    }
+}
+]]>
+</rosieCreate>
+<rosieCreate file="quizManager.js">
+<![CDATA[
+import * as THREE from 'three'; // Needed for THREE.MathUtils.shuffle
+
+export class QuizManager {
+    constructor() {
+        this.questions = [
+            {
+                question: "ENEM 2011: Acompanhando a intenção da personagem...", // Truncated for brevity
+                options: ["A) crítica ao fluxo de informações...", "B) ironia...", "C) dúvida...", "D) fuga...", "E) constatação..."],
+                correctAnswer: 4, // Index of E)
+                source: "ENEM 2011"
+            },
+            {
+                question: "FUVEST 2014: Frase: “Menos é mais.” Essa frase é um exemplo de:",
+                options: ["A) Pleonasmo", "B) Metonímia", "C) Paradoxo", "D) Eufemismo", "E) Comparação"],
+                correctAnswer: 2, // Index of C)
+                source: "FUVEST 2014"
+            },
+             {
+                question: "FUVEST 2010: 'Tinha grande amor à humanidade. Mas não sabia amar ninguém.' A figura de linguagem presente é:",
+                options: ["A) Metáfora", "B) Antítese", "C) Hipérbole", "D) Gradação", "E) Ironia"],
+                correctAnswer: 1, // Index of B)
+                source: "FUVEST 2010"
+            },
+             {
+                question: "ENEM 2015: 'Água mole em pedra dura, tanto bate até que fura.' Qual processo de formação de palavras ocorre em 'pedra-dura'?",
+                options: ["A) Derivação", "B) Composição por Justaposição", "C) Composição por Aglutinação", "D) Abreviação", "E) Hibridismo"],
+                correctAnswer: 1, // Index of B)
+                source: "ENEM 2015"
+             }
+            // Add more questions here...
+        ];
+        this.currentQuestionIndex = -1;
+        this.shuffledIndices = [];
+        this.shuffleQuestions();
+    }
+
+    shuffleQuestions() {
+        this.shuffledIndices = Array.from(this.questions.keys());
+        THREE.MathUtils.shuffle(this.shuffledIndices); // Use Three's shuffle
+        this.currentQuestionIndex = -1; // Reset index after shuffling
+    }
+
+    getNextQuestion() {
+        this.currentQuestionIndex++;
+        if (this.currentQuestionIndex >= this.shuffledIndices.length) {
+            // Optional: Reshuffle and loop if desired
+             this.shuffleQuestions();
+             this.currentQuestionIndex = 0;
+            // Or return null to indicate end
+            // return null;
+        }
+         if (this.shuffledIndices.length === 0) return null; // Handle no questions case
+        const actualIndex = this.shuffledIndices[this.currentQuestionIndex];
+        this.activeQuestion = this.questions[actualIndex];
+        return this.activeQuestion;
+    }
+
+    checkAnswer(selectedIndex) {
+        if (!this.activeQuestion) return false;
+        return selectedIndex === this.activeQuestion.correctAnswer;
+    }
+}
+]]>
+</rosieCreate>
+<rosieCreate file="gazeController.js">
+<![CDATA[
+import * as THREE from 'three';
+import { Constants } from 'constants';
+
+export class GazeController {
+    constructor(camera, scene, uiManager, actionCallback) {
+        this.camera = camera;
+        this.scene = scene;
+        this.uiManager = uiManager;
+        this.actionCallback = actionCallback;
+        this.raycaster = new THREE.Raycaster();
+        this.gazeTargets = []; // Objects that can be interacted with via gaze
+        this.gazingAt = null;
+        this.gazeTimer = 0;
+        this.isGazing = false;
+        this.activated = false; // To prevent multiple triggers
+    }
+
+    setTargets(targets) {
+        this.gazeTargets = targets;
+        this.reset(); // Reset state when targets change
+    }
+
+     reset() {
+        this.gazingAt = null;
+        this.gazeTimer = 0;
+        this.isGazing = false;
+        this.activated = false;
+        this.uiManager.updateGazeIndicator(0); // Reset visual indicator
+    }
+
+
+    update(deltaTime) {
+        // Don't process if already activated an action and waiting for feedback/scene change
+        if (this.activated) return;
+
+        this.raycaster.setFromCamera({ x: 0, y: 0 }, this.camera); // Cast ray from center of view
+        const intersects = this.raycaster.intersectObjects(this.gazeTargets);
+
+        let currentTarget = null;
+        if (intersects.length > 0) {
+            // Find the first valid target (could filter by distance if needed)
+             currentTarget = intersects[0].object;
+             // Optional: Add visual feedback like highlighting the gazed object
+             // intersects[0].object.material.color.setHex(0xffaa00); // Example highlight
+        }
+
+        if (currentTarget) {
+            if (this.gazingAt === currentTarget) {
+                // Still looking at the same target
+                this.gazeTimer += deltaTime;
+                this.isGazing = true;
+                 this.uiManager.updateGazeIndicator(this.gazeTimer / Constants.GAZE_DURATION);
+
+                if (this.gazeTimer >= Constants.GAZE_DURATION && !this.activated) {
+                     this.activated = true; // Mark as activated
+                    this.actionCallback(this.gazingAt);
+                    // Don't reset immediately, let the callback handle flow
+                }
+            } else {
+                // Switched to a new target
+                 if (this.gazingAt) {
+                     // Reset highlight on old target if implemented
+                     // this.gazingAt.material.color.set(this.gazingAt.userData.originalColor || 0xffffff);
+                 }
+                this.gazingAt = currentTarget;
+                this.gazeTimer = 0;
+                this.isGazing = true; // Start timing for the new target
+                 this.uiManager.updateGazeIndicator(0);
+                 // Optional: Store original color before highlighting
+                 // currentTarget.userData.originalColor = currentTarget.material.color.getHex();
+            }
+        } else {
+            // Not looking at any target
+             if (this.gazingAt) {
+                  // Reset highlight on old target if implemented
+                  // this.gazingAt.material.color.set(this.gazingAt.userData.originalColor || 0xffffff);
+             }
+            this.reset(); // Reset timer and state
+        }
+    }
+}
+]]>
+</rosieCreate>
+<rosieCreate file="uiManager.js">
+<![CDATA[
+import * as THREE from 'three';
+import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+import { Constants } from 'constants';
+
+export class UIManager {
+    constructor(scene, camera) {
+        this.scene = scene;
+        this.camera = camera; // Needed for HUD elements
+        this.font = null;
+        this.loader = new FontLoader();
+        this.questionElements = []; // Keep track of question/answer meshes
+        this.feedbackElement = null; // For correct/incorrect message
+        this.feedbackTimer = 0;
+        this.feedbackDuration = 1.5; // How long feedback stays visible
+
+
+        this.gazeIndicator = this.createGazeIndicator();
+        this.scoreText = this.createScoreDisplay(); // Create initially, update later
+
+        this.loadFont(() => {
+             console.log("Font loaded, UI Manager ready.");
+              this.updateScore(0); // Initialize score display once font is ready
+        });
+    }
+
+    loadFont(callback) {
+        // Using a built-in font path available via Three.js examples/jsm repo structure
+        // Ensure this path is accessible via esm.sh or similar CDN mechanism
+        // Note: Using a full URL might be more reliable in buildless setups if direct paths fail
+        const fontPath = 'https://unpkg.com/three@0.171.0/examples/fonts/helvetiker_regular.typeface.json';
+        this.loader.load(fontPath, (font) => {
+            this.font = font;
+            if (callback) callback();
+        }, undefined, (error) => {
+            console.error('Font could not be loaded:', error);
+            // Fallback: maybe use simple planes with canvas textures later if font fails
+        });
+    }
+
+     createGazeIndicator() {
+        const geometry = new THREE.RingGeometry(0.015, 0.02, 32);
+        // Start with white, fully transparent
+        const material = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.5 });
+        const ring = new THREE.Mesh(geometry, material);
+        // Position it slightly in front of the camera
+        ring.position.z = -0.5;
+        ring.userData.isHUD = true; // Mark as HUD element
+        return ring;
+    }
+
+     createScoreDisplay() {
+         const scoreMesh = new THREE.Mesh(
+            new THREE.BufferGeometry(), // Placeholder geometry
+            new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, side: THREE.DoubleSide })
+        );
+        scoreMesh.position.set(-0.45, 0.3, -0.5); // Top-left corner of view
+        scoreMesh.scale.set(0.03, 0.03, 0.03); // Small text
+        scoreMesh.userData.isHUD = true;
+        return scoreMesh;
+     }
+
+     updateScoreDisplayPosition() {
+        // Example: Could adjust Z based on scene depth, or X/Y if needed
+        this.scoreText.position.set(-0.45, 0.3, -0.5);
+     }
+
+
+    updateGazeIndicator(progress) { // progress is 0 to 1
+        if (!this.gazeIndicator) return;
+
+         // Make it more visible as it fills
+         this.gazeIndicator.material.opacity = 0.5 + progress * 0.5;
+
+         // Change color as it fills (optional)
+         this.gazeIndicator.material.color.setHSL(0.3, 1.0, 0.5 + progress * 0.3); // Greenish hue
+
+
+        // Animate the ring closing or filling - using scale for simplicity
+         const scale = 1.0 - progress;
+         this.gazeIndicator.scale.set(scale, scale, scale);
+
+         // Alternative: Change the thetaLength of the RingGeometry (more complex to update buffer geometry)
+         // const thetaLength = Math.max(0.01, progress * Math.PI * 2); // Ensure it doesn't disappear completely
+         // this.gazeIndicator.geometry = new THREE.RingGeometry(0.015, 0.02, 32, 1, 0, thetaLength);
+         // this.gazeIndicator.geometry.dispose(); // Dispose old geometry
+    }
+
+
+    createTextMesh(text, size = 0.1, color = 0xffffff) {
+        if (!this.font) {
+            console.warn("Font not loaded yet for creating text mesh.");
+             // Fallback: Create a simple plane as placeholder
+             const placeholderGeo = new THREE.PlaneGeometry(1, 0.2);
+             const placeholderMat = new THREE.MeshBasicMaterial({ color: 0x555555, side: THREE.DoubleSide });
+             const placeholderMesh = new THREE.Mesh(placeholderGeo, placeholderMat);
+             placeholderMesh.userData.isTextFallback = true;
+            return placeholderMesh;
+        }
+        const textGeo = new TextGeometry(text, {
+            font: this.font,
+            size: size,
+            height: 0.01, // Keep text flat
+            curveSegments: 4, // Lower for performance
+        });
+        textGeo.computeBoundingBox();
+        const textMat = new THREE.MeshBasicMaterial({ color: color, side: THREE.DoubleSide });
+        const textMesh = new THREE.Mesh(textGeo, textMat);
+
+         // Center the text mesh horizontally
+        const textWidth = textGeo.boundingBox.max.x - textGeo.boundingBox.min.x;
+        textMesh.position.x = -textWidth / 2;
+
+        return textMesh;
+    }
+
+    displayQuestion(questionData) {
+        this.clearQuestionUI();
+        if (!this.font) return []; // Wait for font
+
+        const questionTargets = [];
+        const questionGroup = new THREE.Group(); // Group question and answers
+
+        // Display Question Text (limited length recommended)
+        const qText = this.createTextMesh(questionData.question.substring(0, 80) + (questionData.question.length > 80 ? "..." : ""), 0.08, 0xffffff);
+        qText.position.y = 0.5; // Position question above answers
+        questionGroup.add(qText);
+        this.questionElements.push(qText);
+
+        // Display Answer Options
+        const optionYStart = 0.2;
+        const optionSpacing = 0.25;
+        questionData.options.forEach((option, index) => {
+            const optionText = this.createTextMesh(option.substring(0, 50) + (option.length > 50 ? "..." : ""), 0.06, 0xcccccc);
+            optionText.position.y = optionYStart - index * optionSpacing;
+
+             // Create a backing plane for easier targeting
+            const textWidth = optionText.geometry.boundingBox.max.x - optionText.geometry.boundingBox.min.x;
+            const textHeight = optionText.geometry.boundingBox.max.y - optionText.geometry.boundingBox.min.y;
+
+            const planeGeo = new THREE.PlaneGeometry(textWidth + 0.1, textHeight + 0.1); // Add padding
+            const planeMat = new THREE.MeshBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+            const backingPlane = new THREE.Mesh(planeGeo, planeMat);
+
+            // Position text relative to its centered origin on the plane
+             optionText.position.x += textWidth / 2; // Adjust for centering
+             optionText.position.y += textHeight / 2; // Adjust for vertical alignment within plane
+
+             backingPlane.add(optionText); // Add text as child of plane
+             backingPlane.position.y = optionYStart - index * optionSpacing;
+             backingPlane.position.x = 0; // Plane centered horizontally
+
+
+             backingPlane.userData = { type: Constants.TARGET_TYPE.ANSWER, answerIndex: index };
+             questionGroup.add(backingPlane);
+             this.questionElements.push(backingPlane); // Add plane to cleanup list
+             questionTargets.push(backingPlane); // Add plane as the gaze target
+        });
+
+         // Position the whole group in front of the camera
+        questionGroup.position.z = -2; // Place slightly further than HUD
+        questionGroup.position.y = 1.5; // Roughly eye height center
+        this.scene.add(questionGroup);
+        this.questionElements.push(questionGroup); // Add group for cleanup
+
+        return questionTargets;
+    }
+
+     updateScore(score) {
+         if (!this.font || !this.scoreText) return;
+          if (this.scoreText.geometry) this.scoreText.geometry.dispose(); // Dispose old geometry
+
+          const scoreStr = `Pontos: ${score}`;
+           const newGeo = new TextGeometry(scoreStr, {
+                font: this.font,
+                size: 1, // Use scale to control final size
+                height: 0.01,
+                curveSegments: 4,
+            });
+            this.scoreText.geometry = newGeo;
+     }
+
+
+     showFeedback(message, color) {
+         this.hideFeedback(); // Remove previous feedback first
+         if (!this.font) return;
+
+         this.feedbackElement = this.createTextMesh(message, 0.1, color);
+         // Position feedback in the center of view, slightly below gaze indicator
+         this.feedbackElement.position.set(0, -0.1, -0.5); // Center X, slightly below center Y
+         this.feedbackElement.userData.isHUD = true;
+         this.camera.add(this.feedbackElement); // Add directly to camera for HUD effect
+         this.feedbackTimer = this.feedbackDuration;
+     }
+
+     hideFeedback() {
+          if (this.feedbackElement) {
+            this.camera.remove(this.feedbackElement);
+            if (this.feedbackElement.geometry) this.feedbackElement.geometry.dispose();
+            if (this.feedbackElement.material) this.feedbackElement.material.dispose();
+            this.feedbackElement = null;
+         }
+         this.feedbackTimer = 0;
+     }
+
+      displayEndMessage(message) {
+         this.clearQuestionUI();
+          if (!this.font) return;
+
+         const endMesh = this.createTextMesh(message, 0.1, 0xffff00); // Yellow message
+         endMesh.position.set(0, 1.6, -2); // Center in front
+         this.scene.add(endMesh);
+         this.questionElements.push(endMesh); // Ensure it gets cleaned up on scene change
+     }
+
+
+     update(deltaTime) {
+         // Fade out feedback message
+        if (this.feedbackTimer > 0 && this.feedbackElement) {
+            this.feedbackTimer -= deltaTime;
+            const opacity = Math.max(0, this.feedbackTimer / this.feedbackDuration);
+            this.feedbackElement.material.opacity = opacity;
+             if (this.feedbackTimer <= 0) {
+                 this.hideFeedback();
+             }
+        }
+     }
+
+    clearQuestionUI() {
+        this.questionElements.forEach(el => {
+            // Recursively remove children if it's a group
+            el.traverse(child => {
+                 if (child.geometry) child.geometry.dispose();
+                 if (child.material) {
+                     if (child.material.map) child.material.map.dispose();
+                     child.material.dispose();
+                 }
+            });
+             if (el.parent) {
+                 el.parent.remove(el);
+             }
+        });
+        this.questionElements = [];
+         this.hideFeedback(); // Also clear any active feedback
+    }
+}
+]]>
+</rosieCreate>
+<rosieCreate file="constants.js">
+<![CDATA[
+export const Constants = {
+    GAZE_DURATION: 3.0, // Seconds to gaze for action (reduced from 7 for faster testing)
+    TARGET_TYPE: {
+        MOVE: 'move',
+        ANSWER: 'answer'
+    },
+    SCENES: {
+        BEACH: 'beach',
+        FOREST: 'forest',
+        KING_ROOM: 'king_room' // Add more scene keys later
+    }
+};
+]]>
+</rosieCreate>
+</rosieArtifact>
